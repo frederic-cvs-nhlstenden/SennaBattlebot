@@ -10,16 +10,16 @@ const int TRIG_PIN_RIGHT  = 4;  // right ultrasonic trig
 const int ECHO_PIN_RIGHT  = 8;  // right ultrasonic echo
 
 // Target distance from right wall in cm
-const int RIGHT_TARGET = 5;   
+const int RIGHT_TARGET = 5;
 
 // Base forward speed (0-255)
-int baseForwardSpeed = 150;
+int baseForwardSpeed = 225;
 
 // Proportional gain for the right-wall PID
-float Kp_right = 10.0;
+float Kp_right = 5.0;
 
 // Minimum PWM to avoid stalling
-const int MIN_PWM = 75;
+const int MIN_PWM = 100;
 
 // Debug function to test logic between forward and backward mode
 // setting this to 'true' means: error => -(distRight - RIGHT_TARGET)
