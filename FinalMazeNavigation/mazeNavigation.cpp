@@ -1,4 +1,9 @@
 #include <Arduino.h>
+#include <Adafruit_NeoPixel.h>
+
+// ============================================================================
+// CONSTANTS
+// ============================================================================
 
 // ----------------- ARDUINO CONSTANTS -----------------
 const int MOTOR_LEFT_FWD = 10; // A2: left motor forward
@@ -12,18 +17,8 @@ const int ECHO_PIN_RIGHT = 8; // right ultrasonic echo
 // Target distance from right wall in cm
 const int RIGHT_TARGET = 5;
 
-// Base forward speed (0-255)
-int baseForwardSpeed = 225;
-
-// Proportional gain for the right-wall PID
-float Kp_right = 5.0;
-
 // Minimum PWM to avoid stalling
 const int MIN_PWM = 100;
-
-// Debug function to test logic between forward and backward mode
-// setting this to 'true' means: error => -(distRight - RIGHT_TARGET)
-bool flipPidSign = true;
 
 // Rotation sensor pins
 const int LEFT_SENSOR_PIN = 3;  // Left Wheel
@@ -46,14 +41,13 @@ bool droppedOffCone = false;
 unsigned long stepStartTime = 0;
 
 const int SENSOR_PINS[] = {A0, A1, A2, A3, A4, A5, A6, A7};
-int SENSOR_VALUES[8];
-int SENSOR_WEIGHTS[] = {-3500, -2500, -1800, -500, 500, 1500, 2500, 3500};
+int sensorValues[8];
+int sensorWeights[] = {-3500, -2500, -1800, -500, 500, 1500, 2500, 3500};
 int sensorMin[8];
 int sensorMax[8];
 int sensorThresholds[8];
 
 // ----- TURN PARAMETERS -----
-// Wheel and Rotation Sensor Parameters
 const float WHEEL_DIAMETER = 6.0; // cm
 const float WHEEL_CIRCUMFERENCE = 3.14 * WHEEL_DIAMETER;
 const int PULSES_PER_REV = 20;
@@ -62,14 +56,13 @@ const float TRACK_WIDTH = 9.3; // cm
 const int LEFT_TARGET_SPEED = 255;
 const int RIGHT_TARGET_SPEED = 240;
 
-// Motor ramp up speeds for L&R
-const int leftRampSpeeds[4] = {
+const int LEFT_RAMP_SPEEDS[4] = {
     LEFT_TARGET_SPEED / 4,
     LEFT_TARGET_SPEED / 2,
     (LEFT_TARGET_SPEED * 3) / 4,
     LEFT_TARGET_SPEED};
 
-const int rightRampSpeeds[4] = {
+const int RIGHT_RAMP_SPEEDS[4] = {
     RIGHT_TARGET_SPEED / 4,
     RIGHT_TARGET_SPEED / 2,
     (RIGHT_TARGET_SPEED * 3) / 4,
@@ -86,6 +79,27 @@ volatile bool motorsActive = false;
 const int TRIG_PIN = 13;
 const int ECHO_PIN = 12;
 const int OBSTACLE_THRESHOLD = 10; // cm
+
+// Neopixel Setup
+#define LED_PIN 9
+#define LED_COUNT 4
+Adafruit_NeoPixel strip(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
+
+// Color constants (treated as pseudo-constants)
+uint32_t RED = strip.Color(0, 255, 0);
+uint32_t GREEN = strip.Color(255, 0, 0);
+uint32_t BLUE = strip.Color(0, 0, 255);
+uint32_t WHITE = strip.Color(255, 255, 255);
+uint32_t OFF = strip.Color(0, 0, 0);
+
+// Adjustable PID parameters
+int baseForwardSpeed = 225;
+float kpRight = 5.0;
+bool flipPidSign = true;
+
+// ============================================================================
+// SETUP-CRITICAL METHODS + SETUP
+// ============================================================================
 
 // ISRs
 void pulseLeft()
@@ -114,58 +128,13 @@ void pulseRight()
   }
 }
 
-// Measuring distance on the right ultrasonic sensor
-long measureDistanceRight()
+void setAllNeopixels(uint32_t c)
 {
-  digitalWrite(TRIG_PIN_RIGHT, LOW);
-  delayMicroseconds(2);
-  digitalWrite(TRIG_PIN_RIGHT, HIGH);
-  delayMicroseconds(10);
-  digitalWrite(TRIG_PIN_RIGHT, LOW);
-
-  long duration = pulseIn(ECHO_PIN_RIGHT, HIGH, 30000); //
-  if (duration == 0)
+  for (int i = 0; i < LED_COUNT; i++)
   {
-    // No echo => out of range
-    return -1;
+    strip.setPixelColor(i, c);
   }
-  // Convert microseconds to cm
-  return (long)(duration * 0.034 / 2.0);
-}
-
-// Clamping speeds to mitigate stalling and unexpected behavior
-int clampPWM(int val)
-{
-  if (val < 0)
-    val = 0;
-  if (val > 255)
-    val = 255;
-  if (val > 0 && val < MIN_PWM)
-  {
-    val = MIN_PWM;
-  }
-  return val;
-}
-
-// Set motors to drive forward with given clamped speeds
-void setMotorSpeedsForward(int leftSpeed, int rightSpeed)
-{
-  leftSpeed = clampPWM(leftSpeed);
-  rightSpeed = clampPWM(rightSpeed);
-
-  // Left motor forward
-  analogWrite(MOTOR_LEFT_FWD, leftSpeed);
-  analogWrite(MOTOR_LEFT_REV, 0);
-
-  // Right motor forward
-  analogWrite(MOTOR_RIGHT_FWD, rightSpeed);
-  analogWrite(MOTOR_RIGHT_REV, 0);
-
-  // Debug
-  Serial.print("[FWD] L_PWM=");
-  Serial.print(leftSpeed);
-  Serial.print("  R_PWM=");
-  Serial.println(rightSpeed);
+  strip.show();
 }
 
 void setup()
@@ -202,11 +171,75 @@ void setup()
   attachInterrupt(digitalPinToInterrupt(LEFT_SENSOR_PIN), pulseLeft, CHANGE);
   attachInterrupt(digitalPinToInterrupt(RIGHT_SENSOR_PIN), pulseRight, CHANGE);
 
+  // NeoPixel init
+  strip.begin();
+  strip.show();
+  strip.setBrightness(50);
+  setAllNeopixels(BLUE);
+
   Serial.println("=== Minimal Right-Wall-Hugging PID ===");
   Serial.println("Robot will drive forward indefinitely,");
   Serial.println("adjusting speeds to maintain RIGHT_TARGET cm from right wall.");
   Serial.println("--------------------------------------");
   delay(10);
+}
+
+// ============================================================================
+// REMAINING METHODS
+// ============================================================================
+
+// Measuring distance on the right ultrasonic sensor
+long measureDistanceRight()
+{
+  digitalWrite(TRIG_PIN_RIGHT, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN_RIGHT, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN_RIGHT, LOW);
+
+  long duration = pulseIn(ECHO_PIN_RIGHT, HIGH, 30000); //
+  if (duration == 0)
+  {
+    // No echo => out of range
+    return -1;
+  }
+  // Convert microseconds to cm
+  return (long)(duration * 0.034 / 2.0);
+}
+
+// Clamping speeds to mitigate stalling and unexpected behavior
+int clampPwm(int val)
+{
+  if (val < 0)
+    val = 0;
+  if (val > 255)
+    val = 255;
+  if (val > 0 && val < MIN_PWM)
+  {
+    val = MIN_PWM;
+  }
+  return val;
+}
+
+// Set motors to drive forward with given clamped speeds
+void setMotorSpeedsForward(int leftSpeed, int rightSpeed)
+{
+  leftSpeed = clampPwm(leftSpeed);
+  rightSpeed = clampPwm(rightSpeed);
+
+  // Left motor forward
+  analogWrite(MOTOR_LEFT_FWD, leftSpeed);
+  analogWrite(MOTOR_LEFT_REV, 0);
+
+  // Right motor forward
+  analogWrite(MOTOR_RIGHT_FWD, rightSpeed);
+  analogWrite(MOTOR_RIGHT_REV, 0);
+
+  // Debug
+  Serial.print("[FWD] L_PWM=");
+  Serial.print(leftSpeed);
+  Serial.print("  R_PWM=");
+  Serial.println(rightSpeed);
 }
 
 void stopMotors()
@@ -262,7 +295,7 @@ void turnDegrees(int degrees)
   motorsActive = true;
   const int highTurnSpeed = LEFT_TARGET_SPEED; // initial higher speed
   const int lowTurnSpeed = 150;                // slow near the end
-  float speedSwitchThreshold = requiredPulses * 0.8;
+  float speedSwitchThreshold = requiredPulses * 0.6;
 
   // Setting motors up depending on turn direction
   if (degrees > 0)
@@ -292,9 +325,11 @@ void turnDegrees(int degrees)
       Serial.println("Turn timed out (3s). Reversing to free ourselves.");
       stopMotors();
 
-      analogWrite(MOTOR_LEFT_REV, clampPWM(200));
+      setAllNeopixels(RED);
+
+      analogWrite(MOTOR_LEFT_REV, clampPwm(200));
       analogWrite(MOTOR_LEFT_FWD, 0);
-      analogWrite(MOTOR_RIGHT_REV, clampPWM(200));
+      analogWrite(MOTOR_RIGHT_REV, clampPwm(200));
       analogWrite(MOTOR_RIGHT_FWD, 0);
       delay(1000);
       stopMotors();
@@ -304,6 +339,7 @@ void turnDegrees(int degrees)
 
       stopMotors();
       motorsActive = false;
+      setAllNeopixels(BLUE);
       return; // Returning early to go back to main loop
     }
 
@@ -362,7 +398,7 @@ void gripper(int pulse)
 
   if (pulse > 0)
   {
-    lastPulse = pulse; // Store the last requested pulse width
+    lastPulse = pulse;
   }
 
   if (millis() >= timer)
@@ -387,20 +423,25 @@ bool isAllBlack()
       return false;
     }
   }
-
   return true;
 }
 
+// ============================================================================
+// LOOP
+// ============================================================================
 void loop()
 {
   // Wating for the line maze robot to drop the cone in front
   if (!secondRobotCleared)
   {
     long distFront = measureDistance();
-    if (distFront > 0 && distFront < 15)
+    if (distFront > 0 && distFront < 20)
     {
       // Once detected, wait until it leaves
       Serial.println("Second robot in front - waiting...");
+
+      setAllNeopixels(GREEN);
+
       while (true)
       {
         distFront = measureDistance();
@@ -408,9 +449,10 @@ void loop()
           break;
         delay(50);
       }
-      // 
+      //
       delay(5000);
       secondRobotCleared = true;
+      setAllNeopixels(BLUE);
     }
     else
     {
@@ -432,6 +474,7 @@ void loop()
     {
       calibrateStartTime = millis();
       Serial.println("Starting 1s on-the-fly calibration, ignoring black lines...");
+      setAllNeopixels(WHITE);
     }
 
     // Continuously update min & max for each sensor
@@ -466,13 +509,12 @@ void loop()
       sensorsCalibrated = true;
       calibrating = false;
       stopMotors();
-      Serial.println("Done with on-the-fly calibration -> now normal pickup logic...");
+      Serial.println("Done with calibration -> now normal pickup logic...");
+      setAllNeopixels(BLUE);
     }
-
     return;
   }
 
-  
   // If we haven't picked up the cone yet ->
   // drive until black surface -> stop & pickup -> turn -> set stepStartTime -> done
   if (!pickedUpCone)
@@ -489,14 +531,13 @@ void loop()
 
       unsigned long closeStart = millis();
       while (millis() - closeStart < 1000)
-      { // Repeating gripper signal for 1s to ensure it closes
+      {
+        // Repeating gripper signal for 1s to ensure it closes
         gripper(CLOSE_GRIP);
       }
 
       pickedUpCone = true;
-
       turnDegrees(90);
-
       stepStartTime = millis();
       return;
     }
@@ -530,6 +571,8 @@ void loop()
       gripper(OPEN_GRIP);
     }
     droppedOffCone = true;
+
+    setAllNeopixels(GREEN);
   }
 
   // Normal Maze/PID Logic
@@ -542,7 +585,7 @@ void loop()
   float error = distRightVal - RIGHT_TARGET;
   if (flipPidSign)
     error = -error;
-  float correction = Kp_right * error;
+  float correction = kpRight * error;
 
   int leftSpeed = (int)(baseForwardSpeed - correction);
   int rightSpeed = (int)(baseForwardSpeed + correction);
